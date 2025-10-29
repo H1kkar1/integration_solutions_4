@@ -4,7 +4,7 @@ import threading
 from typing import Dict, Any
 
 from config import settings
-from pika import PlainCredentials, BlockingConnection
+from pika import PlainCredentials, BlockingConnection, ConnectionParameters
 
 from rabbitmq_hendler import ResponseHandler
 from rabbit_client import BrokerHelper
@@ -12,15 +12,28 @@ from rabbit_client import BrokerHelper
 
 class TestClient:
     def __init__(self):
-        self.broker = BrokerHelper(
-            host=settings.rmq.host,
-            port=settings.rmq.port,
+        # Создаем параметры подключения
+        self.rmq_parameters = ConnectionParameters(
+            host='localhost',
+            port=5672,
             credentials=PlainCredentials(
-                username=settings.rmq.username,
-                password=settings.rmq.password,
+                username='user',
+                password='123',
             ),
         )
-        self.response_handler = ResponseHandler(self.broker.rmq_parameters)
+        
+        self.broker = BrokerHelper(
+            host='localhost',
+            port=5672,
+            credentials=PlainCredentials(
+                username='user',
+                password='123',
+            ),
+        )
+        self.response_handler = ResponseHandler(self.rmq_parameters)
+        
+        # Даем время фоновому слушателю запуститься
+        time.sleep(2)
 
     def print_separator(self, title: str):
         """Печатает разделитель с заголовком"""
@@ -37,25 +50,26 @@ class TestClient:
         print(f"  Password: {password}")
 
         # Отправляем запрос
-        print("\n📤 Отправка сообщения в очередь...")
+        print("\n Отправка сообщения в очередь...")
         correlation_id = self.broker.user_create(username, email, password)
-        print(f"✅ Сообщение отправлено. Correlation ID: {correlation_id}")
+        print(f" Сообщение отправлено. Correlation ID: {correlation_id}")
 
         # Ждем ответ
-        print("\n⏳ Ожидание ответа от сервера...")
-        response = self.response_handler.wait_for_response(correlation_id, timeout=15)
+        print("\n Ожидание ответа от сервера...")
+        response = self.response_handler.wait_for_response(correlation_id, timeout=10)
 
         # Выводим результат
-        print("\n📥 Получен ответ от сервера:")
+        print("\n Получен ответ от сервера:")
         print(f"  Correlation ID: {response.get('correlation_id')}")
         print(f"  Status: {response.get('status')}")
         print(f"  Data: {json.dumps(response.get('data'), indent=2)}")
-        print(f"  Error: {response.get('error')}")
+        if response.get('error'):
+            print(f"  Error: {response.get('error')}")
 
         if response['status'] == 'ok':
-            print("🎉 Пользователь успешно создан!")
+            print(" Пользователь успешно создан!")
         else:
-            print("❌ Ошибка при создании пользователя!")
+            print(" Ошибка при создании пользователя!")
 
         return response
 
@@ -66,33 +80,33 @@ class TestClient:
         print(f"  Username: {username}")
 
         # Отправляем запрос
-        print("\n📤 Отправка сообщения в очередь...")
+        print("\n Отправка сообщения в очередь...")
         correlation_id = self.broker.user_delete(username)
-        print(f"✅ Сообщение отправлено. Correlation ID: {correlation_id}")
+        print(f" Сообщение отправлено. Correlation ID: {correlation_id}")
 
         # Ждем ответ
-        print("\n⏳ Ожидание ответа от сервера...")
-        response = self.response_handler.wait_for_response(correlation_id, timeout=15)
+        print("\n Ожидание ответа от сервера...")
+        response = self.response_handler.wait_for_response(correlation_id, timeout=10)
 
         # Выводим результат
-        print("\n📥 Получен ответ от сервера:")
+        print("\n Получен ответ от сервера:")
         print(f"  Correlation ID: {response.get('correlation_id')}")
         print(f"  Status: {response.get('status')}")
         print(f"  Data: {json.dumps(response.get('data'), indent=2)}")
-        print(f"  Error: {response.get('error')}")
+        if response.get('error'):
+            print(f"  Error: {response.get('error')}")
 
         if response['status'] == 'ok':
-            print("🎉 Пользователь успешно удален!")
+            print(" Пользователь успешно удален!")
         else:
-            print("❌ Ошибка при удалении пользователя!")
+            print(" Ошибка при удалении пользователя!")
 
         return response
 
     def test_async_operations(self):
-        """Тестирует асинхронные операции без ожидания ответа"""
+        """Тестирует асинхронные операции"""
         self.print_separator("ТЕСТ АСИНХРОННЫХ ОПЕРАЦИЙ")
-
-        print("Отправка нескольких запросов без ожидания ответов...")
+        print("Отправка нескольких запросов...")
 
         # Создаем несколько пользователей
         users = [
@@ -110,22 +124,31 @@ class TestClient:
                 user["password"]
             )
             correlation_ids.append(correlation_id)
-            print(f"📤 Отправлен запрос для {user['username']}, Correlation ID: {correlation_id}")
+            print(f" Отправлен запрос для {user['username']}, Correlation ID: {correlation_id}")
             time.sleep(0.5)  # Небольшая задержка между запросами
 
-        print(f"\n✅ Всего отправлено {len(correlation_ids)} запросов")
+        print(f"\n Всего отправлено {len(correlation_ids)} запросов")
 
         # Теперь ждем ответы на все запросы
-        print("\n⏳ Ожидание ответов на все запросы...")
+        print("\n Ожидание ответов на все запросы...")
+
+        successful = 0
+        failed = 0
 
         for i, correlation_id in enumerate(correlation_ids):
-            print(f"\n🔍 Проверка ответа для запроса {i + 1}...")
-            response = self.response_handler.wait_for_response(correlation_id, timeout=10)
+            print(f"\n Проверка ответа для запроса {i + 1}...")
+            response = self.response_handler.wait_for_response(correlation_id, timeout=15)
 
-            print(f"📥 Ответ {i + 1}:")
+            print(f" Ответ {i + 1}:")
             print(f"  Status: {response.get('status')}")
             print(f"  Username: {response.get('data', {}).get('username', 'N/A')}")
-            print(f"  Error: {response.get('error')}")
+            if response.get('error'):
+                print(f"  Error: {response.get('error')}")
+                failed += 1
+            else:
+                successful += 1
+
+        print(f"\n Итог: {successful} успешно, {failed} с ошибками")
 
     def test_error_scenarios(self):
         """Тестирование сценариев с ошибками"""
@@ -137,60 +160,51 @@ class TestClient:
 
         print("\n2. Тест дублирования пользователя...")
         # Сначала создаем пользователя
-        self.test_user_create("duplicate_user", "duplicate@test.com", "password123")
+        response1 = self.test_user_create("duplicate_user", "duplicate@test.com", "password123")
+        
+        if response1['status'] == 'ok':
+            print("\n3. Попытка создать пользователя с тем же username...")
+            response2 = self.test_user_create("duplicate_user", "another@test.com", "password456")
+            
+            # Очистка
+            if response1['status'] == 'ok':
+                self.test_user_delete("duplicate_user")
+        else:
+            print(" Не удалось создать пользователя для теста дублирования")
 
-        print("\n3. Попытка создать пользователя с тем же username...")
-        response = self.test_user_create("duplicate_user", "another@test.com", "password456")
+    def test_multiple_operations(self):
+        """Тест множественных операций"""
+        self.print_separator("ТЕСТ МНОЖЕСТВЕННЫХ ОПЕРАЦИЙ")
 
-        # Очистка
-        self.test_user_delete("duplicate_user")
+        users_to_test = [
+            {"username": "john_doe", "email": "john@example.com", "password": "johnpass"},
+            {"username": "jane_smith", "email": "jane@example.com", "password": "janepass"},
+            {"username": "bob_wilson", "email": "bob@example.com", "password": "bobpass"},
+        ]
 
-    def start_response_listener(self):
-        """Запускает фоновый слушатель ответов"""
+        created_users = []
 
-        def listen_for_responses():
-            connection = BlockingConnection(self.broker.rmq_parameters)
-            channel = connection.channel()
+        # Создаем пользователей
+        for user in users_to_test:
+            response = self.test_user_create(user["username"], user["email"], user["password"])
+            if response['status'] == 'ok':
+                created_users.append(user["username"])
+            time.sleep(1)
 
-            def callback(ch, method, properties, body):
-                response = json.loads(body)
-                print(f"\n🎯 ФОН: Получен ответ:")
-                print(f"   Correlation ID: {response.get('correlation_id')}")
-                print(f"   Status: {response.get('status')}")
-                print(f"   Data: {json.dumps(response.get('data'), indent=4)}")
-                if response.get('error'):
-                    print(f"   Error: {response.get('error')}")
-                ch.basic_ack(delivery_tag=method.delivery_tag)
-
-            channel.basic_consume(
-                queue='user_responses',
-                on_message_callback=callback,
-                auto_ack=False
-            )
-
-            print("👂 Фоновый слушатель ответов запущен...")
-            channel.start_consuming()
-
-        # Запускаем в отдельном потоке
-        listener_thread = threading.Thread(target=listen_for_responses, daemon=True)
-        listener_thread.start()
-        return listener_thread
-
+        # Удаляем созданных пользователей
+        for username in created_users:
+            self.test_user_delete(username)
+            time.sleep(1)
 
 def main():
     """Основная функция тестирования"""
-    print("🚀 ЗАПУСК ТЕСТОВОГО КЛИЕНТА RABBITMQ")
+    print(" ЗАПУСК ТЕСТОВОГО КЛИЕНТА RABBITMQ")
     print("Настройки подключения:")
-    print(f"  Host: {settings.rmq.host}")
-    print(f"  Port: {settings.rmq.port}")
-    print(f"  Username: {settings.rmq.username}")
+    print(f"  Host: localhost")
+    print(f"  Port: 5672")
+    print(f"  Username: user")
 
     client = TestClient()
-
-    # Запускаем фоновый слушатель
-    print("\n🔄 Запуск фонового слушателя ответов...")
-    client.start_response_listener()
-    time.sleep(2)  # Даем время слушателю запуститься
 
     try:
         # Тест 1: Простое создание пользователя
@@ -210,40 +224,24 @@ def main():
         time.sleep(2)
 
         # Тест 5: Множественные операции
-        client.print_separator("ТЕСТ МНОЖЕСТВЕННЫХ ОПЕРАЦИЙ")
-
-        users_to_test = [
-            {"username": "john_doe", "email": "john@example.com", "password": "johnpass"},
-            {"username": "jane_smith", "email": "jane@example.com", "password": "janepass"},
-            {"username": "bob_wilson", "email": "bob@example.com", "password": "bobpass"},
-        ]
-
-        created_users = []
-
-        # Создаем пользователей
-        for user in users_to_test:
-            response = client.test_user_create(user["username"], user["email"], user["password"])
-            if response['status'] == 'ok':
-                created_users.append(user["username"])
-            time.sleep(1)
-
-        # Удаляем созданных пользователей
-        for username in created_users:
-            client.test_user_delete(username)
-            time.sleep(1)
-
-        print("\n" + "🎊" * 20)
+        client.test_multiple_operations()
+        time.sleep(2)
         print("ВСЕ ТЕСТЫ ЗАВЕРШЕНЫ!")
-        print("🎊" * 20)
 
     except KeyboardInterrupt:
-        print("\n\n⏹️ Тестирование прервано пользователем")
+        print("\n\n Тестирование прервано пользователем")
     except Exception as e:
-        print(f"\n\n❌ Произошла ошибка: {e}")
+        print(f"\n\n Произошла ошибка: {e}")
         import traceback
         traceback.print_exc()
 
     print("\nДля выхода нажмите Ctrl+C...")
+    # Держим программу активной
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n Завершение работы...")
 
 
 if __name__ == "__main__":

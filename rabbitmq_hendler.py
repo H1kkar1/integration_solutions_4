@@ -1,72 +1,89 @@
 import json
+import time
+import threading
 from typing import Dict, Any
-
-from pika import BlockingConnection, ConnectionParameters
-
-from rabbit_client import rmq
+from pika import BlockingConnection, ConnectionParameters, PlainCredentials
+from pika.exceptions import AMQPConnectionError
 
 
 class ResponseHandler:
-    """Обработчик ответов от сервера"""
-
+    """Обработчик ответов от RabbitMQ"""
+    
     def __init__(self, connection_parameters: ConnectionParameters):
         self.connection_parameters = connection_parameters
-        self.pending_requests = {}  # для отслеживания ожидающих ответов
+        self.responses = {}
+        self._start_background_listener()
+
+    def _start_background_listener(self):
+        """Запускает фоновое прослушивание ответов"""
+        def listener():
+            while True:
+                try:
+                    connection = BlockingConnection(self.connection_parameters)
+                    channel = connection.channel()
+                    
+                    # Объявляем очередь для ответов
+                    channel.queue_declare(queue='user_responses', durable=False)
+                    print(" Фоновый слушатель: очередь user_responses готова")
+
+                    def callback(ch, method, properties, body):
+                        try:
+                            response = json.loads(body)
+                            correlation_id = response.get('correlation_id')
+                            
+                            if correlation_id:
+                                self.responses[correlation_id] = response
+                                print(f" ФОН: Получен ответ для {correlation_id}")
+                            
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            
+                        except Exception as e:
+                            print(f" ФОН: Ошибка обработки: {e}")
+                            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                    
+                    channel.basic_consume(
+                        queue='user_responses',
+                        on_message_callback=callback,
+                        auto_ack=False
+                    )
+                    
+                    print(" Фоновый слушатель ответов запущен и ожидает сообщения...")
+                    channel.start_consuming()
+                    
+                except AMQPConnectionError as e:
+                    print(f" Ошибка подключения в фоновом слушателе: {e}")
+                    time.sleep(5)
+                except Exception as e:
+                    print(f" Ошибка в фоновом слушателе: {e}")
+                    time.sleep(5)
+
+        # Запускаем в отдельном потоке
+        thread = threading.Thread(target=listener, daemon=True)
+        thread.start()
 
     def wait_for_response(self, correlation_id: str, timeout: int = 10) -> Dict[str, Any]:
-        """Ожидание ответа по correlation_id"""
-        import time
-
-        response = None
+        """Ожидает ответ с указанным correlation_id"""
+        print(f" Ожидание ответа для {correlation_id} (таймаут: {timeout}сек)")
         start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            if correlation_id in self.responses:
+                response = self.responses.pop(correlation_id)
+                print(f" Ответ найден для {correlation_id}")
+                return response
+            
+            time.sleep(0.1)  # Небольшая пауза между проверками
+        
+        # Таймаут
+        timeout_response = {
+            "correlation_id": correlation_id,
+            "status": "error",
+            "error": f"Timeout waiting for response ({timeout}s)",
+            "data": {}
+        }
+        print(f" Таймаут для {correlation_id}")
+        return timeout_response
 
-        def response_callback(ch, method, properties, body):
-            nonlocal response
-            response_data = json.loads(body)
-            if response_data['correlation_id'] == correlation_id:
-                response = response_data
-                ch.basic_ack(delivery_tag=method.delivery_tag)
-                ch.stop_consuming()
-
-        connection = BlockingConnection(self.connection_parameters)
-        channel = connection.channel()
-
-        channel.basic_consume(
-            queue='user_responses',
-            on_message_callback=response_callback,
-            auto_ack=False
-        )
-
-        # Ждем ответ в течение timeout секунд
-        while time.time() - start_time < timeout and response is None:
-            connection.process_data_events(time_limit=1)
-
-        connection.close()
-
-        if response is None:
-            return {
-                "correlation_id": correlation_id,
-                "status": "timeout",
-                "data": None,
-                "error": "Response timeout"
-            }
-
-        return response
-
-
-# Пример использования клиента с ожиданием ответа
-def create_user_with_response(username: str, email: str, password: str):
-    # Отправляем запрос
-    correlation_id = rmq.user_create(username, email, password)
-
-    # Ждем ответ
-    response_handler = ResponseHandler(rmq.rmq_parameters)
-    response = response_handler.wait_for_response(correlation_id)
-
-    if response['status'] == 'ok':
-        print(f"User created successfully: {response['data']}")
-    else:
-        print(f"Error creating user: {response['error']}")
-
-    return response
-
+    def get_pending_responses(self):
+        """Возвращает количество ожидающих ответов"""
+        return len(self.responses)
